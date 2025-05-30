@@ -18,6 +18,7 @@ torchrec = ">=1.1.0,<1.2.0"
 gin_config = ">=0.5.0,<0.6.0"
 tensorboard = "2.19.0"
 pybind11 = "2.11.1"
+scipy = "^1.15.3"
 
 [[tool.poetry.source]]
 name = "torch-cu124"
