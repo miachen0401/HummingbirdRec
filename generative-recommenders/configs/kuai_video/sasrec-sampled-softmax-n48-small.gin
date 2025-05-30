@@ -1,35 +1,34 @@
 # Copyright (c) Meta Platforms, Inc. and affiliates.
 #
 # Frozen config, validated on 04/11/2024.
-# Based on HSTU results (w/ identical configurations as a SotA Transformer baseline) in
-# Actions Speak Louder than Words: Trillion-Parameter Sequential Transducers for Generative Recommendations (https://arxiv.org/abs/2402.17152).
+# Based on baseline settings in Revisiting Neural Retrieval on Accelerators (https://arxiv.org/abs/2306.04039, KDD'23).
 #
 # Run this as:
 # mkdir -p logs/kuai-video-l100-n48/
-# CUDA_VISIBLE_DEVICES=0 python3 main.py --gin_config_file=configs/kuai-video/hstu-sampled-softmax-n48-small.gin --master_port=12345 2>&1 | tee logs/kuai-video-l100-n48/hstu-sampled-softmax-n48-small.log
+# CUDA_VISIBLE_DEVICES=0 python3 main.py --gin_config_file=configs/kuai-video/sasrec-sampled-softmax-n48-small.gin --master_port=12345 2>&1 | tee logs/kuai-video-l100-n48/sasrec-sampled-softmax-n48-small.log
 
 train_fn.dataset_name = "kuai_video"
 train_fn.max_sequence_length = 100
 train_fn.local_batch_size = 48
 
-train_fn.main_module = "HSTU"
+train_fn.main_module = "SASRec"
 train_fn.dropout_rate = 0.2
 train_fn.user_embedding_norm = "l2_norm"
 train_fn.num_epochs = 101
 train_fn.item_embedding_dim = 50
 
-hstu_encoder.num_blocks = 2
-hstu_encoder.num_heads = 1
-hstu_encoder.dqk = 50
-hstu_encoder.dv = 50
-hstu_encoder.linear_dropout_rate = 0.2
+sasrec_encoder.num_blocks = 2
+sasrec_encoder.num_heads = 1
+sasrec_encoder.ffn_dropout_rate = 0.2
+sasrec_encoder.ffn_hidden_dim = 50
+sasrec_encoder.ffn_activation_fn = "relu"
 
 train_fn.learning_rate = 1e-3
 train_fn.weight_decay = 0
 train_fn.num_warmup_steps = 0
 
-train_fn.interaction_module_type = "DotProduct"
 train_fn.top_k_method = "MIPSBruteForceTopK"
+train_fn.interaction_module_type = "DotProduct"
 
 train_fn.loss_module = "SampledSoftmaxLoss"
 train_fn.num_negatives = 128
