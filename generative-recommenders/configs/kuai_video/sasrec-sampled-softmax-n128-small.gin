@@ -4,12 +4,12 @@
 # Based on baseline settings in Revisiting Neural Retrieval on Accelerators (https://arxiv.org/abs/2306.04039, KDD'23).
 #
 # Run this as:
-# mkdir -p logs/kuai-video-l100-n48/
-# CUDA_VISIBLE_DEVICES=0 python3 main.py --gin_config_file=configs/kuai-video/sasrec-sampled-softmax-n48-small.gin --master_port=12345 2>&1 | tee logs/kuai-video-l100-n48/sasrec-sampled-softmax-n48-small.log
+# mkdir -p logs/kuai-video-l100/
+# CUDA_VISIBLE_DEVICES=0 python3 main.py --gin_config_file=configs/kuai_video/sasrec-sampled-softmax-n128-small.gin --master_port=12345 2>&1 | tee logs/kuai-video-l100-n128/sasrec-sampled-softmax-n128-small.log
 
 train_fn.dataset_name = "kuai_video"
 train_fn.max_sequence_length = 100
-train_fn.local_batch_size = 48
+train_fn.local_batch_size = 128
 
 train_fn.main_module = "SASRec"
 train_fn.dropout_rate = 0.2
@@ -31,7 +31,7 @@ train_fn.top_k_method = "MIPSBruteForceTopK"
 train_fn.interaction_module_type = "DotProduct"
 
 train_fn.loss_module = "SampledSoftmaxLoss"
-train_fn.num_negatives = 64
+train_fn.num_negatives = 128
 
 train_fn.sampling_strategy = "local"
 train_fn.temperature = 0.05

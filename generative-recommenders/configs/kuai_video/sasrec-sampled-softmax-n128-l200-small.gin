@@ -4,8 +4,8 @@
 # Based on baseline settings in Revisiting Neural Retrieval on Accelerators (https://arxiv.org/abs/2306.04039, KDD'23).
 #
 # Run this as:
-# mkdir -p logs/kuai-video-l200-n128/
-# CUDA_VISIBLE_DEVICES=0 python3 main.py --gin_config_file=configs/kuai_video/sasrec-sampled-softmax-n128-l200-small.gin --master_port=12345 2>&1 | tee logs/kuai-video-l200-n128/sasrec-sampled-softmax-n128-small.log
+# mkdir -p logs/kuai-video-l200/
+# CUDA_VISIBLE_DEVICES=0 python3 main.py --gin_config_file=configs/kuai_video/sasrec-sampled-softmax-n128-l200-small.gin --master_port=12345 2>&1 | tee logs/kuai-video-l200/sasrec-sampled-softmax-n128-small.log
 
 train_fn.dataset_name = "kuai_video"
 train_fn.max_sequence_length = 200

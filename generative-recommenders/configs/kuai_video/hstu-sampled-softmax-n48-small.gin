@@ -5,7 +5,7 @@
 # Actions Speak Louder than Words: Trillion-Parameter Sequential Transducers for Generative Recommendations (https://arxiv.org/abs/2402.17152).
 #
 # Run this as:
-# mkdir -p logs/kuai-video-l100-n48/
+# mkdir -p logs/kuai-video-l100/
 # CUDA_VISIBLE_DEVICES=0 python3 main.py --gin_config_file=configs/kuai-video/hstu-sampled-softmax-n48-small.gin --master_port=12345 2>&1 | tee logs/kuai-video-l100-n48/hstu-sampled-softmax-n48-small.log
 
 train_fn.dataset_name = "kuai_video"
