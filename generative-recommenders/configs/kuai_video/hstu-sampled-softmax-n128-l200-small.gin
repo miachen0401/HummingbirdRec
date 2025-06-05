@@ -32,7 +32,7 @@ train_fn.interaction_module_type = "DotProduct"
 train_fn.top_k_method = "MIPSBruteForceTopK"
 
 train_fn.loss_module = "SampledSoftmaxLoss"
-train_fn.num_negatives = 64
+train_fn.num_negatives = 128
 
 train_fn.sampling_strategy = "local"
 train_fn.temperature = 0.05
