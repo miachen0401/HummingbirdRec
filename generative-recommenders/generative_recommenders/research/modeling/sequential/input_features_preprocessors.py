@@ -17,6 +17,7 @@
 import abc
 import math
 from typing import Dict, Tuple
+from datetime import datetime
 
 import torch
 
@@ -201,6 +202,7 @@ class CombinedItemAndRatingInputFeaturesPreprocessor(InputFeaturesPreprocessorMo
         """
         Returns (B, N * 2,) x int64.
         """
+        #print(past_payloads.keys())
         B, N = past_ids.size()
         return torch.cat(
             [
@@ -221,6 +223,7 @@ class CombinedItemAndRatingInputFeaturesPreprocessor(InputFeaturesPreprocessorMo
         Returns (B, N * 2,) x bool.
         """
         B, N = past_ids.size()
+        #print("keys in data",past_payloads.keys())
         return (past_ids != 0).unsqueeze(2).expand(-1, -1, 2).reshape(B, N * 2)
 
     def forward(
@@ -241,6 +244,119 @@ class CombinedItemAndRatingInputFeaturesPreprocessor(InputFeaturesPreprocessorMo
             dim=2,
         ) * (self._embedding_dim**0.5)
         user_embeddings = user_embeddings.view(B, N * 2, D)
+        user_embeddings = user_embeddings + self._pos_emb(
+            torch.arange(N * 2, device=past_ids.device).unsqueeze(0).repeat(B, 1)
+        )
+        user_embeddings = self._emb_dropout(user_embeddings)
+
+        valid_mask = (
+            self.get_preprocessed_masks(
+                past_lengths,
+                past_ids,
+                past_embeddings,
+                past_payloads,
+            )
+            .unsqueeze(2)
+            .float()
+        )  # (B, N * 2, 1,)
+        user_embeddings *= valid_mask
+        return past_lengths * 2, user_embeddings, valid_mask
+
+### ------ implement RoPE here ------ ###
+class RotaryTimestampEmbeddingPreprocessor(InputFeaturesPreprocessorModule):
+    def __init__(
+        self,
+        max_sequence_len: int,
+        item_embedding_dim: int,
+        dropout_rate: float,
+        num_ratings: int,
+    ) -> None:
+        super().__init__()
+
+        self._embedding_dim: int = item_embedding_dim
+        # Due to [item_0, rating_0, item_1, rating_1, ...]
+        self._pos_emb: torch.nn.Embedding = torch.nn.Embedding(
+            max_sequence_len * 2,
+            self._embedding_dim,
+        )
+        self._dropout_rate: float = dropout_rate
+        self._emb_dropout = torch.nn.Dropout(p=dropout_rate)
+        self._rating_emb: torch.nn.Embedding = torch.nn.Embedding(
+            num_ratings,
+            item_embedding_dim,
+        )
+        self.reset_state()
+
+    def debug_str(self) -> str:
+        return f"combir_d{self._dropout_rate}"
+
+    def reset_state(self) -> None:
+        truncated_normal(
+            self._pos_emb.weight.data,
+            mean=0.0,
+            std=math.sqrt(1.0 / self._embedding_dim),
+        )
+        truncated_normal(
+            self._rating_emb.weight.data,
+            mean=0.0,
+            std=math.sqrt(1.0 / self._embedding_dim),
+        )
+
+    def get_preprocessed_masks(
+        self,
+        past_lengths: torch.Tensor,
+        past_ids: torch.Tensor,
+        past_embeddings: torch.Tensor,
+        past_payloads: Dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        """
+        Returns (B, N * 2,) x bool.
+        """
+        B, N = past_ids.size()
+        return (past_ids != 0).unsqueeze(2).expand(-1, -1, 2).reshape(B, N * 2)
+        
+    ### add RoPE here
+    def apply_rotary_embedding(self, timestamps: torch.Tensor, dim: int) -> torch.Tensor:
+        half_dim = dim // 2
+        device = timestamps.device
+        dtype = timestamps.dtype
+
+        theta = 10000 ** (-2 * torch.arange(half_dim, dtype=dtype, device=device) / dim)
+        embeddings = timestamps.unsqueeze(-1) *theta
+        x_rot = torch.cat([torch.sin(embeddings), torch.cos(embeddings)], dim=-1)
+        return x_rot
+    ### RoPE ends
+
+    def forward(
+        self,
+        past_lengths: torch.Tensor,
+        past_ids: torch.Tensor,
+        past_embeddings: torch.Tensor,
+        past_payloads: Dict[str, torch.Tensor],
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        B, N = past_ids.size()
+        D = past_embeddings.size(-1)
+
+        user_embeddings = torch.cat(
+            [
+                past_embeddings,  # (B, N, D)
+                self._rating_emb(past_payloads["ratings"].int()),
+            ],
+            dim=2,
+        ) * (self._embedding_dim**0.5)
+        user_embeddings = user_embeddings.view(B, N * 2, D)
+
+        ### ------- RoPE ------- ###
+        timestamps = past_payloads["timestamps"].cpu().numpy()  # (B, N)
+        hour_values = torch.tensor(
+            [[datetime.utcfromtimestamp(ts.item()).hour for ts in row] for row in timestamps],
+            device=past_embeddings.device
+        )  # shape (B, N)
+        timestamp_hours = hour_values.unsqueeze(-1).expand(-1, -1, 2).reshape(B, N * 2)
+
+        user_embeddings = user_embeddings + self.apply_rotary_embedding(timestamp_hours,self._embedding_dim)
+        ### ------- RoPE ends ------- ###
+
         user_embeddings = user_embeddings + self._pos_emb(
             torch.arange(N * 2, device=past_ids.device).unsqueeze(0).repeat(B, 1)
         )

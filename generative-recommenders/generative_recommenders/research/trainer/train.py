@@ -54,6 +54,8 @@ from generative_recommenders.research.modeling.sequential.features import (
 )
 from generative_recommenders.research.modeling.sequential.input_features_preprocessors import (
     LearnablePositionalEmbeddingInputFeaturesPreprocessor,
+    RotaryTimestampEmbeddingPreprocessor,
+    CombinedItemAndRatingInputFeaturesPreprocessor,
 )
 from generative_recommenders.research.modeling.sequential.losses.sampled_softmax import (
     SampledSoftmaxLoss,
@@ -197,10 +199,18 @@ def train_fn(
             eps=1e-6,
         )
     )
-    input_preproc_module = LearnablePositionalEmbeddingInputFeaturesPreprocessor(
+    #input_preproc_module = LearnablePositionalEmbeddingInputFeaturesPreprocessor(
+    #    max_sequence_len=dataset.max_sequence_length + gr_output_length + 1,
+    #    embedding_dim=item_embedding_dim,
+    #    dropout_rate=dropout_rate,
+    #)
+            
+    input_preproc_module = RotaryTimestampEmbeddingPreprocessor(
         max_sequence_len=dataset.max_sequence_length + gr_output_length + 1,
-        embedding_dim=item_embedding_dim,
+        item_embedding_dim=item_embedding_dim,
         dropout_rate=dropout_rate,
+        #rating_embedding_dim = target_ratings
+        num_ratings = 6
     )
 
     model = get_sequential_encoder(
