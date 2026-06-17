@@ -303,6 +303,10 @@ def train_fn(
     model_desc = (
         f"{model_subfolder}"
         + f"/{model_debug_str}_{interaction_module_debug_str}_{sampling_debug_str}_{loss_debug_str}"
+        # include the input-preprocessor type so the baseline (positional) and
+        # temporal (Time2Vec) runs land in distinct exps/ckpt dirs (their model
+        # debug strings are otherwise identical -> tfevents would collide).
+        + f"-pp_{input_preproc_type}"
         + f"{f'-ddp{world_size}' if world_size > 1 else ''}-b{local_batch_size}-lr{learning_rate}-wu{num_warmup_steps}-wd{weight_decay}{'' if enable_tf32 else '-notf32'}-{date_str}"
     )
     if full_eval_every_n > 1:
@@ -344,7 +348,9 @@ def train_fn(
         logging.info(f"Rank {rank}: disabling summary writer")
 
     last_training_time = time.time()
-    torch.autograd.set_detect_anomaly(True)
+    # Anomaly detection adds large backward-pass overhead; it is a debugging aid,
+    # not needed for these runs (kept off for speed; flip on only when debugging).
+    torch.autograd.set_detect_anomaly(False)
 
     batch_id = 0
     epoch = 0

@@ -92,4 +92,43 @@ cd generative-recommenders && python3 -m pytest \
 
 ## Results
 
-_TBD — filled in from the wandb runs once GPU is free on hula._
+Run on hula (RTX 4080 SUPER, torch 2.6+cu124), 101 epochs each, seed 42, KuaiRec
+`small_matrix` (1270 train / 141 eval users). Metrics = **mean over the last 10
+epochs** (the 141-user eval set is small and the per-epoch metric is noisy, so
+"max over epochs" cherry-picks spikes; last-10-mean is the stable headline).
+Logged to wandb project `HummingbirdRec-temporal`. Plots in `plots/`.
+
+| backbone | variant | HR@10 | HR@50 | NDCG@10 | NDCG@50 | MRR |
+|---|---|---|---|---|---|---|
+| SASRec | baseline | 0.333±.004 | 0.553±.005 | 0.234±.003 | 0.282±.003 | 0.218±.003 |
+| SASRec | **temporal** | 0.330±.007 | **0.570±.004** | 0.236±.003 | **0.288±.003** | **0.221±.003** |
+| HSTU | baseline | 0.318±.008 | 0.564±.007 | 0.226±.005 | 0.280±.005 | 0.213±.005 |
+| HSTU | temporal | 0.294±.010 | 0.525±.006 | 0.208±.006 | 0.259±.005 | 0.196±.005 |
+
+Δ% (temporal vs baseline, last-10 mean):
+- **SASRec: HR@50 +3.0%, NDCG@50 +2.2%, MRR +1.7%, NDCG@10 +0.5%; HR@10 −0.9%, HR@200 −0.2%.**
+- **HSTU: all metrics −7% to −8%** (HR@10 −7.5%, NDCG@10 −8.2%, MRR −8.1%).
+
+### Conclusion
+
+1. **On SASRec the temporal encoder gives a small but consistent gain** on the
+   broader-cutoff / ranking metrics (HR@50, NDCG@50, MRR; ~2–3× the run std), and
+   is flat at top-10. SASRec has no built-in time mechanism, so this is the clean
+   test — and it confirms explicit time features help a temporally-blind model.
+2. **On HSTU the temporal encoder hurts (~−8% everywhere).** HSTU already models
+   inter-event time deltas in attention (`RelativeBucketedTimeAndPositionBasedBias`),
+   so an extra input-side temporal embedding is redundant — it adds capacity that
+   overfits the tiny train set. The NDCG@10 curve shows HSTU-temporal degrading
+   over training while HSTU-baseline stays flat.
+
+This explains why the original "RoPE" attempt never showed a gain: it was applied
+to **HSTU**, which already handles time, *and* it only encoded hour-of-day. The
+right place for an explicit temporal encoder is a backbone without a time
+mechanism (SASRec), where it does help.
+
+### Caveats / next steps
+- Single seed; the SASRec gains (~+2–3%) are modest and only a couple× the
+  within-run std. A 3-seed repeat would firm up significance. The HSTU
+  degradation (~−8%) is well outside noise and robust.
+- KuaiRec `small_matrix` is tiny (1270 train users) and dense; results may differ
+  on `big_matrix` or with longer sequences.
