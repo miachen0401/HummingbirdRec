@@ -299,6 +299,7 @@ class TemporalInputFeaturesPreprocessor(InputFeaturesPreprocessorModule):
         dropout_rate: float,
         time2vec_dim: int = 16,
         seconds_per_day: int = 86400,
+        log_time_scale: float = 10.0,
     ) -> None:
         super().__init__()
 
@@ -310,6 +311,9 @@ class TemporalInputFeaturesPreprocessor(InputFeaturesPreprocessorModule):
         self._dropout_rate: float = dropout_rate
         self._emb_dropout = torch.nn.Dropout(p=dropout_rate)
         self._seconds_per_day: int = seconds_per_day
+        # log-seconds can reach ~16 (months); divide so the Time2Vec inputs are
+        # O(1) and no single feature dominates the projection.
+        self._log_time_scale: float = log_time_scale
 
         # Time2Vec for the two continuous features (log-recency, log-gap):
         # index 0 is a linear term, the rest are sinusoids with learnable
@@ -338,7 +342,12 @@ class TemporalInputFeaturesPreprocessor(InputFeaturesPreprocessorModule):
             torch.nn.init.normal_(w, mean=0.0, std=1.0)
         for b in (self._t2v_recency_b, self._t2v_gap_b):
             torch.nn.init.uniform_(b, 0.0, 2.0 * math.pi)
-        torch.nn.init.xavier_uniform_(self._temporal_proj.weight)
+        # Zero-init the projection so the temporal branch is a residual that
+        # starts at exactly 0: at init the module == the positional baseline, and
+        # training can only add temporal signal where it reduces loss (it cannot
+        # disrupt an already-strong backbone). Gradients still flow because the
+        # input features are non-zero.
+        torch.nn.init.zeros_(self._temporal_proj.weight)
         torch.nn.init.zeros_(self._temporal_proj.bias)
 
     def _time2vec(
@@ -358,12 +367,12 @@ class TemporalInputFeaturesPreprocessor(InputFeaturesPreprocessorModule):
         # recency = t_last - t_i, using the max *valid* timestamp per row.
         masked_ts = torch.where(valid, ts, torch.full_like(ts, -1.0))
         t_last = masked_ts.max(dim=1, keepdim=True).values  # (B, 1)
-        log_recency = torch.log1p((t_last - ts).clamp(min=0.0))
+        log_recency = torch.log1p((t_last - ts).clamp(min=0.0)) / self._log_time_scale
 
         # gap = t_i - t_{i-1} (0 for the first position), clamped to >= 0.
         gap = torch.zeros_like(ts)
         gap[:, 1:] = (ts[:, 1:] - ts[:, :-1]).clamp(min=0.0)
-        log_gap = torch.log1p(gap)
+        log_gap = torch.log1p(gap) / self._log_time_scale
 
         # cyclical time-of-day and day-of-week from unix seconds (UTC).
         ang_day = 2.0 * math.pi * torch.remainder(ts, spd) / spd

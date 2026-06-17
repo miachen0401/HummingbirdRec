@@ -96,8 +96,11 @@ class TemporalInputFeaturesPreprocessorTest(unittest.TestCase):
         This is the core regression guard: the old preprocessor kept only the
         hour-of-day, so most timestamp changes were invisible. Here we shift
         every timestamp by several days+hours and require the output to move.
+        The projection is zero-initialized (residual gate), so un-zero it first
+        to exercise the temporal path.
         """
         m = self._module()
+        torch.nn.init.normal_(m._temporal_proj.weight, std=0.5)
         pl, pid, pe, pp = _make_batch(self.B, self.N, self.D, n_pad=2)
         _, out_a, _ = m(pl, pid, pe, pp)
         pp2 = dict(pp)
@@ -109,28 +112,27 @@ class TemporalInputFeaturesPreprocessorTest(unittest.TestCase):
         self.assertFalse(torch.allclose(out_a[valid.expand_as(out_a)],
                                         out_b[valid.expand_as(out_b)]))
 
-    def test_reduces_to_baseline_when_temporal_zeroed(self) -> None:
-        """With the temporal projection zeroed, the module must equal the
-        learnable-positional baseline (proving temporal is a clean additive
-        extension, not a structural change to the baseline path)."""
+    def test_residual_is_zero_at_init(self) -> None:
+        """The temporal projection is zero-initialized, so a freshly built module
+        must equal the learnable-positional baseline at init (temporal is a pure
+        additive residual gate -- it starts at 0 and can only *add* signal that
+        reduces loss, so it can never disrupt an already-strong backbone)."""
         m = self._module()
         base = LearnablePositionalEmbeddingInputFeaturesPreprocessor(
             max_sequence_len=self.max_len,
             embedding_dim=self.D,
             dropout_rate=0.0,
         ).eval()
-        # share the positional embedding, then kill the temporal contribution.
-        base._pos_emb.weight.data.copy_(m._pos_emb.weight.data)
-        with torch.no_grad():
-            m._temporal_proj.weight.zero_()
-            m._temporal_proj.bias.zero_()
+        base._pos_emb.weight.data.copy_(m._pos_emb.weight.data)  # share positions
         pl, pid, pe, pp = _make_batch(self.B, self.N, self.D, n_pad=3)
-        _, out_m, _ = m(pl, pid, pe, pp)
+        _, out_m, _ = m(pl, pid, pe, pp)  # no manual zeroing: already zero-init
         _, out_b, _ = base(pl, pid, pe, pp)
         torch.testing.assert_close(out_m, out_b)
 
     def test_gradients_flow_to_temporal_params(self) -> None:
         m = self._module()
+        # un-zero the residual projection so the temporal path is active.
+        torch.nn.init.normal_(m._temporal_proj.weight, std=0.5)
         pl, pid, pe, pp = _make_batch(self.B, self.N, self.D, n_pad=2)
         _, user_emb, _ = m(pl, pid, pe, pp)
         user_emb.sum().backward()
