@@ -54,8 +54,7 @@ from generative_recommenders.research.modeling.sequential.features import (
 )
 from generative_recommenders.research.modeling.sequential.input_features_preprocessors import (
     LearnablePositionalEmbeddingInputFeaturesPreprocessor,
-    RotaryTimestampEmbeddingPreprocessor,
-    CombinedItemAndRatingInputFeaturesPreprocessor,
+    TemporalInputFeaturesPreprocessor,
 )
 from generative_recommenders.research.modeling.sequential.losses.sampled_softmax import (
     SampledSoftmaxLoss,
@@ -135,6 +134,11 @@ def train_fn(
     l2_norm_eps: float = 1e-6,
     enable_tf32: bool = False,
     random_seed: int = 42,
+    input_preproc_type: str = "learnable_positional",
+    temporal_time2vec_dim: int = 16,
+    enable_wandb: bool = False,
+    wandb_project: str = "HummingbirdRec",
+    wandb_run_name: Optional[str] = None,
 ) -> None:
     # to enable more deterministic results.
     random.seed(random_seed)
@@ -199,19 +203,27 @@ def train_fn(
             eps=1e-6,
         )
     )
-    #input_preproc_module = LearnablePositionalEmbeddingInputFeaturesPreprocessor(
-    #    max_sequence_len=dataset.max_sequence_length + gr_output_length + 1,
-    #    embedding_dim=item_embedding_dim,
-    #    dropout_rate=dropout_rate,
-    #)
-            
-    input_preproc_module = RotaryTimestampEmbeddingPreprocessor(
-        max_sequence_len=dataset.max_sequence_length + gr_output_length + 1,
-        item_embedding_dim=item_embedding_dim,
-        dropout_rate=dropout_rate,
-        #rating_embedding_dim = target_ratings
-        num_ratings = 6
-    )
+    # Input preprocessor selects how (and whether) time is modeled. This is the
+    # only thing that differs between the baseline and the temporal-encoding
+    # treatment, giving a clean A/B (set via gin: train_fn.input_preproc_type).
+    #   "learnable_positional" -> baseline (absolute position only)
+    #   "temporal"             -> baseline + Time2Vec temporal embedding
+    preproc_max_len = dataset.max_sequence_length + gr_output_length + 1
+    if input_preproc_type == "learnable_positional":
+        input_preproc_module = LearnablePositionalEmbeddingInputFeaturesPreprocessor(
+            max_sequence_len=preproc_max_len,
+            embedding_dim=item_embedding_dim,
+            dropout_rate=dropout_rate,
+        )
+    elif input_preproc_type == "temporal":
+        input_preproc_module = TemporalInputFeaturesPreprocessor(
+            max_sequence_len=preproc_max_len,
+            embedding_dim=item_embedding_dim,
+            dropout_rate=dropout_rate,
+            time2vec_dim=temporal_time2vec_dim,
+        )
+    else:
+        raise ValueError(f"Unknown input_preproc_type {input_preproc_type}")
 
     model = get_sequential_encoder(
         module_type=main_module,
@@ -301,9 +313,32 @@ def train_fn(
     os.makedirs(f"./exps/{model_subfolder}", exist_ok=True)
     os.makedirs(f"./ckpts/{model_subfolder}", exist_ok=True)
     log_dir = f"./exps/{model_desc}"
+    wandb_run = None
     if rank == 0:
         writer = SummaryWriter(log_dir=log_dir)
         logging.info(f"Rank {rank}: writing logs to {log_dir}")
+        if enable_wandb:
+            import wandb
+
+            wandb_run = wandb.init(
+                project=wandb_project,
+                name=wandb_run_name or model_desc.replace("/", "__"),
+                config={
+                    "dataset_name": dataset_name,
+                    "main_module": main_module,
+                    "input_preproc_type": input_preproc_type,
+                    "temporal_time2vec_dim": temporal_time2vec_dim,
+                    "max_sequence_length": max_sequence_length,
+                    "item_embedding_dim": item_embedding_dim,
+                    "local_batch_size": local_batch_size,
+                    "num_negatives": num_negatives,
+                    "learning_rate": learning_rate,
+                    "weight_decay": weight_decay,
+                    "num_epochs": num_epochs,
+                    "random_seed": random_seed,
+                },
+            )
+            logging.info(f"Rank {rank}: wandb run {wandb_run.name} ({wandb_run.id})")
     else:
         writer = None
         logging.info(f"Rank {rank}: disabling summary writer")
@@ -528,12 +563,30 @@ def train_fn(
             f"rank {rank}: eval @ epoch {epoch} in {time.time() - eval_start_time:.2f}s: "
             f"NDCG@10 {ndcg_10:.4f}, NDCG@50 {ndcg_50:.4f}, HR@10 {hr_10:.4f}, HR@50 {hr_50:.4f}, MRR {mrr:.4f}"
         )
+        if wandb_run is not None:
+            hr_200 = _avg(eval_dict_all["hr@200"], world_size=world_size)
+            ndcg_200 = _avg(eval_dict_all["ndcg@200"], world_size=world_size)
+            wandb_run.log(
+                {
+                    "epoch": epoch,
+                    "eval_epoch/ndcg@10": ndcg_10,
+                    "eval_epoch/ndcg@50": ndcg_50,
+                    "eval_epoch/ndcg@200": ndcg_200,
+                    "eval_epoch/hr@10": hr_10,
+                    "eval_epoch/hr@50": hr_50,
+                    "eval_epoch/hr@200": hr_200,
+                    "eval_epoch/mrr": mrr,
+                },
+                step=batch_id,
+            )
         last_training_time = time.time()
 
     if rank == 0:
         if writer is not None:
             writer.flush()
             writer.close()
+        if wandb_run is not None:
+            wandb_run.finish()
 
         torch.save(
             {
