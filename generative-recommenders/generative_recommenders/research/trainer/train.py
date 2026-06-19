@@ -54,8 +54,7 @@ from generative_recommenders.research.modeling.sequential.features import (
 )
 from generative_recommenders.research.modeling.sequential.input_features_preprocessors import (
     LearnablePositionalEmbeddingInputFeaturesPreprocessor,
-    RotaryTimestampEmbeddingPreprocessor,
-    CombinedItemAndRatingInputFeaturesPreprocessor,
+    TemporalInputFeaturesPreprocessor,
 )
 from generative_recommenders.research.modeling.sequential.losses.sampled_softmax import (
     SampledSoftmaxLoss,
@@ -135,6 +134,12 @@ def train_fn(
     l2_norm_eps: float = 1e-6,
     enable_tf32: bool = False,
     random_seed: int = 42,
+    input_preproc_type: str = "learnable_positional",
+    temporal_time2vec_dim: int = 16,
+    temporal_weight_decay: float = 0.0,
+    enable_wandb: bool = False,
+    wandb_project: str = "HummingbirdRec",
+    wandb_run_name: Optional[str] = None,
 ) -> None:
     # to enable more deterministic results.
     random.seed(random_seed)
@@ -199,19 +204,27 @@ def train_fn(
             eps=1e-6,
         )
     )
-    #input_preproc_module = LearnablePositionalEmbeddingInputFeaturesPreprocessor(
-    #    max_sequence_len=dataset.max_sequence_length + gr_output_length + 1,
-    #    embedding_dim=item_embedding_dim,
-    #    dropout_rate=dropout_rate,
-    #)
-            
-    input_preproc_module = RotaryTimestampEmbeddingPreprocessor(
-        max_sequence_len=dataset.max_sequence_length + gr_output_length + 1,
-        item_embedding_dim=item_embedding_dim,
-        dropout_rate=dropout_rate,
-        #rating_embedding_dim = target_ratings
-        num_ratings = 6
-    )
+    # Input preprocessor selects how (and whether) time is modeled. This is the
+    # only thing that differs between the baseline and the temporal-encoding
+    # treatment, giving a clean A/B (set via gin: train_fn.input_preproc_type).
+    #   "learnable_positional" -> baseline (absolute position only)
+    #   "temporal"             -> baseline + Time2Vec temporal embedding
+    preproc_max_len = dataset.max_sequence_length + gr_output_length + 1
+    if input_preproc_type == "learnable_positional":
+        input_preproc_module = LearnablePositionalEmbeddingInputFeaturesPreprocessor(
+            max_sequence_len=preproc_max_len,
+            embedding_dim=item_embedding_dim,
+            dropout_rate=dropout_rate,
+        )
+    elif input_preproc_type == "temporal":
+        input_preproc_module = TemporalInputFeaturesPreprocessor(
+            max_sequence_len=preproc_max_len,
+            embedding_dim=item_embedding_dim,
+            dropout_rate=dropout_rate,
+            time2vec_dim=temporal_time2vec_dim,
+        )
+    else:
+        raise ValueError(f"Unknown input_preproc_type {input_preproc_type}")
 
     model = get_sequential_encoder(
         module_type=main_module,
@@ -279,8 +292,25 @@ def train_fn(
     model = DDP(model, device_ids=[rank], broadcast_buffers=False)
 
     # TODO: wrap in create_optimizer.
+    # Put the temporal-encoder-specific params (Time2Vec + temporal projection)
+    # in their own param group so they can be weight-decayed independently: on a
+    # tiny dataset this added capacity overfits late, and regularizing *only* it
+    # (leaving the backbone untouched) curbs that without changing the baseline.
+    temporal_keys = ("_t2v_", "_temporal_proj")
+    temporal_params, other_params = [], []
+    for n, p in model.named_parameters():
+        (temporal_params if any(k in n for k in temporal_keys) else other_params).append(p)
+    param_groups = [{"params": other_params, "weight_decay": weight_decay}]
+    if temporal_params:
+        param_groups.append(
+            {"params": temporal_params, "weight_decay": temporal_weight_decay}
+        )
+        logging.info(
+            f"optimizer: {len(temporal_params)} temporal params @ wd={temporal_weight_decay}, "
+            f"{len(other_params)} other params @ wd={weight_decay}"
+        )
     opt = torch.optim.AdamW(
-        model.parameters(),
+        param_groups,
         lr=learning_rate,
         betas=(0.9, 0.98),
         weight_decay=weight_decay,
@@ -291,6 +321,10 @@ def train_fn(
     model_desc = (
         f"{model_subfolder}"
         + f"/{model_debug_str}_{interaction_module_debug_str}_{sampling_debug_str}_{loss_debug_str}"
+        # include the input-preprocessor type so the baseline (positional) and
+        # temporal (Time2Vec) runs land in distinct exps/ckpt dirs (their model
+        # debug strings are otherwise identical -> tfevents would collide).
+        + f"-pp_{input_preproc_type}"
         + f"{f'-ddp{world_size}' if world_size > 1 else ''}-b{local_batch_size}-lr{learning_rate}-wu{num_warmup_steps}-wd{weight_decay}{'' if enable_tf32 else '-notf32'}-{date_str}"
     )
     if full_eval_every_n > 1:
@@ -301,15 +335,40 @@ def train_fn(
     os.makedirs(f"./exps/{model_subfolder}", exist_ok=True)
     os.makedirs(f"./ckpts/{model_subfolder}", exist_ok=True)
     log_dir = f"./exps/{model_desc}"
+    wandb_run = None
     if rank == 0:
         writer = SummaryWriter(log_dir=log_dir)
         logging.info(f"Rank {rank}: writing logs to {log_dir}")
+        if enable_wandb:
+            import wandb
+
+            wandb_run = wandb.init(
+                project=wandb_project,
+                name=wandb_run_name or model_desc.replace("/", "__"),
+                config={
+                    "dataset_name": dataset_name,
+                    "main_module": main_module,
+                    "input_preproc_type": input_preproc_type,
+                    "temporal_time2vec_dim": temporal_time2vec_dim,
+                    "max_sequence_length": max_sequence_length,
+                    "item_embedding_dim": item_embedding_dim,
+                    "local_batch_size": local_batch_size,
+                    "num_negatives": num_negatives,
+                    "learning_rate": learning_rate,
+                    "weight_decay": weight_decay,
+                    "num_epochs": num_epochs,
+                    "random_seed": random_seed,
+                },
+            )
+            logging.info(f"Rank {rank}: wandb run {wandb_run.name} ({wandb_run.id})")
     else:
         writer = None
         logging.info(f"Rank {rank}: disabling summary writer")
 
     last_training_time = time.time()
-    torch.autograd.set_detect_anomaly(True)
+    # Anomaly detection adds large backward-pass overhead; it is a debugging aid,
+    # not needed for these runs (kept off for speed; flip on only when debugging).
+    torch.autograd.set_detect_anomaly(False)
 
     batch_id = 0
     epoch = 0
@@ -528,12 +587,30 @@ def train_fn(
             f"rank {rank}: eval @ epoch {epoch} in {time.time() - eval_start_time:.2f}s: "
             f"NDCG@10 {ndcg_10:.4f}, NDCG@50 {ndcg_50:.4f}, HR@10 {hr_10:.4f}, HR@50 {hr_50:.4f}, MRR {mrr:.4f}"
         )
+        if wandb_run is not None:
+            hr_200 = _avg(eval_dict_all["hr@200"], world_size=world_size)
+            ndcg_200 = _avg(eval_dict_all["ndcg@200"], world_size=world_size)
+            wandb_run.log(
+                {
+                    "epoch": epoch,
+                    "eval_epoch/ndcg@10": ndcg_10,
+                    "eval_epoch/ndcg@50": ndcg_50,
+                    "eval_epoch/ndcg@200": ndcg_200,
+                    "eval_epoch/hr@10": hr_10,
+                    "eval_epoch/hr@50": hr_50,
+                    "eval_epoch/hr@200": hr_200,
+                    "eval_epoch/mrr": mrr,
+                },
+                step=batch_id,
+            )
         last_training_time = time.time()
 
     if rank == 0:
         if writer is not None:
             writer.flush()
             writer.close()
+        if wandb_run is not None:
+            wandb_run.finish()
 
         torch.save(
             {

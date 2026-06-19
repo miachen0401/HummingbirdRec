@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.ipynb_checkpoints/
+
+# OS junk
+.DS_Store
+
+# Datasets / raw + processed data (download via preprocess_public_data.py)
+generative-recommenders/tmp/
+tmp/
+
+# Training artifacts — checkpoints, logs, tensorboard runs, wandb
+**/ckpts/
+**/logs/
+**/exps/
+wandb/
+*.log
+
+# Virtualenvs
+.venv/
+venv/

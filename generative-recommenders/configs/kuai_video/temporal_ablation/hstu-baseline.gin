@@ -1,0 +1,56 @@
+# Temporal-encoding ablation on KuaiRec (kuai_video), HSTU backbone.
+# BASELINE: absolute learnable positional embedding only at the input.
+# NOTE: HSTU already models inter-event TIME DELTAS inside attention via
+# RelativeBucketedTimeAndPositionBasedBias (enabled by default), so this is a
+# *hard* baseline that is already temporally aware. The temporal pair tests
+# whether an explicit input-side temporal encoding adds complementary signal.
+#
+# Run:
+#   CUDA_VISIBLE_DEVICES=0 python3 main.py \
+#     --gin_config_file=configs/kuai_video/temporal_ablation/hstu-baseline.gin \
+#     --master_port=12345
+
+train_fn.dataset_name = "kuai_video"
+train_fn.max_sequence_length = 100
+train_fn.local_batch_size = 128
+
+train_fn.main_module = "HSTU"
+train_fn.dropout_rate = 0.2
+train_fn.user_embedding_norm = "l2_norm"
+train_fn.num_epochs = 101
+train_fn.item_embedding_dim = 50
+
+hstu_encoder.num_blocks = 2
+hstu_encoder.num_heads = 1
+hstu_encoder.dqk = 50
+hstu_encoder.dv = 50
+hstu_encoder.linear_dropout_rate = 0.2
+
+train_fn.learning_rate = 1e-3
+train_fn.weight_decay = 0
+train_fn.num_warmup_steps = 0
+
+train_fn.interaction_module_type = "DotProduct"
+train_fn.top_k_method = "MIPSBruteForceTopK"
+
+train_fn.loss_module = "SampledSoftmaxLoss"
+train_fn.num_negatives = 128
+
+train_fn.sampling_strategy = "local"
+train_fn.temperature = 0.05
+train_fn.item_l2_norm = True
+train_fn.l2_norm_eps = 1e-6
+
+train_fn.enable_tf32 = True
+train_fn.random_seed = 42
+
+# --- ablation switch ---
+train_fn.input_preproc_type = "learnable_positional"
+
+# --- logging ---
+train_fn.enable_wandb = True
+train_fn.wandb_project = "HummingbirdRec-temporal"
+train_fn.wandb_run_name = "hstu-baseline-s42"
+
+create_data_loader.prefetch_factor = 128
+create_data_loader.num_workers = 8
