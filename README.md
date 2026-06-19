@@ -67,45 +67,75 @@ hstu_encoder.linear_dropout_rate = 0.2
 - **Embedding Dimension**: 50D optimized for video content representation
 - **Attention Mechanism**: Single-head attention for efficient processing of video sequences
 
-## 🔮 Next Steps: Real-Time Position Embedding
+## ⏱️ Temporal Encoding (Time2Vec)
 
-### Current Position Embedding
-The current implementation uses timestamp-based positional encoding:
+Giving the sequential model an explicit understanding of **interaction time** —
+recency, inter-event gaps, and time-of-day / day-of-week cycles. Full write-up
+(diagnosis, method, ablation, plots): **[`docs/temporal_ablation.md`](docs/temporal_ablation.md)**.
 
-```python
-# From generative_recommenders/modules/positional_encoder.py
-class HSTUPositionalEncoder(HammerModule):
-    def __init__(self, num_position_buckets: int, num_time_buckets: int, ...):
-        self._position_embeddings_weight = torch.nn.Parameter(...)
-        self._timestamp_embeddings_weight = torch.nn.Parameter(...)
+### Why the first attempt didn't help
+
+An earlier `RotaryTimestampEmbeddingPreprocessor` ("RoPE temporal encoder") showed
+no gain. Root causes (all verified against the code):
+
+1. It was **not RoPE** — an additive `sin/cos` *input* embedding, not a Q/K rotation.
+2. It encoded **only `datetime.utcfromtimestamp(ts).hour`** (hour-of-day), discarding
+   recency, ordering, and inter-event gaps.
+3. It was tested on **HSTU**, which already models inter-event time deltas via
+   `RelativeBucketedTimeAndPositionBasedBias` — so an input-side time embedding was
+   redundant.
+4. A per-element `datetime` **python loop on CPU** ran every forward step.
+5. No clean A/B (the baseline preprocessor was commented out in place).
+
+### What's implemented now
+
+`TemporalInputFeaturesPreprocessor`
+(`generative_recommenders/research/modeling/sequential/input_features_preprocessors.py`)
+— the positional baseline **plus** a vectorized **Time2Vec** temporal embedding:
+
+- `log1p(recency)` (time before the most recent event) and `log1p(gap)`
+  (inter-event spacing), each via Time2Vec (linear term + learnable-frequency sinusoids);
+- cyclical **hour-of-day** and **day-of-week** (`sin/cos`), via modular arithmetic on
+  the unix seconds;
+- fully vectorized on-device (no CPU round-trip / datetime loop);
+- added as a **zero-init residual** (starts exactly at the baseline, so it can only
+  *add* signal that reduces loss), with normalized time features and an independent
+  **weight-decay** group on its parameters to curb overfitting on small datasets.
+
+Clean A/B is a single gin switch — everything else is identical:
+
+```gin
+train_fn.input_preproc_type = "learnable_positional"   # baseline (position only)
+train_fn.input_preproc_type = "temporal"               # + Time2Vec temporal encoder
+train_fn.temporal_weight_decay = 0.1                   # regularize the temporal params
 ```
 
-### Planned Real-Time Enhancements
+Configs: `configs/kuai_video/temporal_ablation/{sasrec,hstu}-{baseline,temporal}.gin`.
+Run e.g.:
 
-#### 1. Dynamic Temporal Encoding
-- **Real-Time Timestamp Processing**: Incorporate live timestamp information for immediate recommendation updates
-- **Adaptive Time Buckets**: Dynamic adjustment of time buckets based on user activity patterns
-- **Streaming Position Updates**: Continuous position embedding updates for real-time recommendation serving
-
-#### 2. Context-Aware Position Embedding
-```python
-# Planned enhancement
-def real_time_position_embedding(
-    current_timestamp: torch.Tensor,
-    user_context: torch.Tensor,
-    video_features: torch.Tensor
-) -> torch.Tensor:
-    # Real-time position encoding considering:
-    # - Current time of day
-    # - User's historical viewing patterns
-    # - Video content characteristics
-    pass
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 generative-recommenders/main.py \
+  --gin_config_file=generative-recommenders/configs/kuai_video/temporal_ablation/sasrec-temporal.gin \
+  --master_port=12345
 ```
 
-#### 3. Multi-Scale Temporal Features
-- **Hour-of-Day Encoding**: Capture daily viewing patterns
-- **Day-of-Week Patterns**: Weekly user behavior cycles
-- **Seasonal Trends**: Long-term temporal patterns in video consumption
+### Results (KuaiRec `small_matrix`, 101 epochs, seed 42, last-10-epoch mean)
+
+![Temporal ablation](plots/temporal_ablation_metrics.png)
+
+| backbone | variant | HR@10 | HR@50 | NDCG@10 | NDCG@50 | MRR |
+|---|---|---|---|---|---|---|
+| SASRec | baseline | 0.328 | 0.557 | 0.236 | 0.286 | 0.222 |
+| SASRec | **+temporal** | **0.352** (+7.4%) | **0.577** (+3.4%) | **0.250** (+5.8%) | **0.299** (+4.4%) | **0.232** (+4.6%) |
+| HSTU | baseline | 0.330 | 0.566 | 0.237 | 0.288 | 0.223 |
+| HSTU | **+temporal** | **0.342** (+3.7%) | **0.575** (+1.6%) | 0.237 (+0.0%) | 0.288 (−0.2%) | 0.219 (−1.7%) |
+
+- **SASRec** (no built-in time mechanism): consistent gain on every metric.
+- **HSTU** (already time-aware): recall up (HR@10/HR@50), ranking quality neutral
+  (NDCG/MRR within run std) — marginal but no longer harmful.
+
+Net: the temporal encoder is **≥ baseline (helpful or neutral) for both backbones**.
+Caveat: single seed, tiny/noisy eval set (141 users) — treat few-% deltas as soft.
 
 ## 🛠️ Installation & Usage
 
@@ -122,13 +152,25 @@ The KuaiRec dataset can be downloaded from the official website:
 
 **Download Options**:
 
-**Option 1: wget command**
+**Option 1: HuggingFace mirror (recommended — fast & reliable)**
+The official `nas.chongminggao.top` host is often unreachable; this mirror serves
+the CSVs directly. For the temporal ablation only `small_matrix.csv` is needed
+(`user_features.csv` is not read by the sequential model — a dummy with the right
+columns suffices):
+```bash
+mkdir -p generative-recommenders/tmp/kuai_video && cd generative-recommenders/tmp/kuai_video
+wget -O small_matrix.csv.gz \
+  https://huggingface.co/datasets/hiiamkik/kuai-rec-data/resolve/main/small_matrix.csv.gz
+gunzip small_matrix.csv.gz
+```
+
+**Option 2: official wget (may hang)**
 ```bash
 wget https://nas.chongminggao.top:4430/datasets/KuaiRec.zip --no-check-certificate
 unzip KuaiRec.zip
 ```
 
-**Option 2: Manual download**
+**Option 3: Manual download**
 - [Google Drive](https://kuairec.com/) (Link available on official website)
 - [USTC Drive](https://kuairec.com/) (中科大, Link available on official website)
 
