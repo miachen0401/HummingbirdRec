@@ -48,11 +48,13 @@ train_fn.random_seed = 42
 # --- ablation switch ---
 train_fn.input_preproc_type = "temporal"
 train_fn.temporal_time2vec_dim = 16
+# regularize the added temporal capacity (curbs late overfit on the tiny dataset)
+train_fn.temporal_weight_decay = 0.1
 
 # --- logging ---
 train_fn.enable_wandb = True
 train_fn.wandb_project = "HummingbirdRec-temporal"
-train_fn.wandb_run_name = "hstu-temporal-s42"
+train_fn.wandb_run_name = "hstu-temporal-wd0.1-s42"
 
 create_data_loader.prefetch_factor = 128
 create_data_loader.num_workers = 8

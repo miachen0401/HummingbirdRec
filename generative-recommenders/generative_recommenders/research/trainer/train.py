@@ -136,6 +136,7 @@ def train_fn(
     random_seed: int = 42,
     input_preproc_type: str = "learnable_positional",
     temporal_time2vec_dim: int = 16,
+    temporal_weight_decay: float = 0.0,
     enable_wandb: bool = False,
     wandb_project: str = "HummingbirdRec",
     wandb_run_name: Optional[str] = None,
@@ -291,8 +292,25 @@ def train_fn(
     model = DDP(model, device_ids=[rank], broadcast_buffers=False)
 
     # TODO: wrap in create_optimizer.
+    # Put the temporal-encoder-specific params (Time2Vec + temporal projection)
+    # in their own param group so they can be weight-decayed independently: on a
+    # tiny dataset this added capacity overfits late, and regularizing *only* it
+    # (leaving the backbone untouched) curbs that without changing the baseline.
+    temporal_keys = ("_t2v_", "_temporal_proj")
+    temporal_params, other_params = [], []
+    for n, p in model.named_parameters():
+        (temporal_params if any(k in n for k in temporal_keys) else other_params).append(p)
+    param_groups = [{"params": other_params, "weight_decay": weight_decay}]
+    if temporal_params:
+        param_groups.append(
+            {"params": temporal_params, "weight_decay": temporal_weight_decay}
+        )
+        logging.info(
+            f"optimizer: {len(temporal_params)} temporal params @ wd={temporal_weight_decay}, "
+            f"{len(other_params)} other params @ wd={weight_decay}"
+        )
     opt = torch.optim.AdamW(
-        model.parameters(),
+        param_groups,
         lr=learning_rate,
         betas=(0.9, 0.98),
         weight_decay=weight_decay,
