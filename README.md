@@ -2,17 +2,27 @@
 
 ## Overview
 
-HummingbirdRec implements **HSTU (Hierarchical Sequential Transducer Units)**, a state-of-the-art generative recommender model originally developed by Meta and published in ICML'24. This implementation is specifically optimized for User-Generated Content (UGC) short video platforms and demonstrates significant improvements over previous SOTA models like SASRec on the KuaiRec dataset, with novel adaptations for short video recommendation scenarios.
+HummingbirdRec implements **HSTU (Hierarchical Sequential Transducer Units)**, a
+generative recommender model from Meta (ICML'24), with adaptations for
+User-Generated Content (UGC) short-video recommendation on the KuaiRec dataset:
+duration-aware `watch_ratio` rating normalization and a **Time2Vec temporal
+encoder** (see [Temporal Encoding](#️-temporal-encoding-time2vec)).
 
 **Based on Meta's HSTU Repo**: This work builds upon the foundational research from Meta AI, as described in ["Actions Speak Louder than Words: Trillion-Parameter Sequential Transducers for Generative Recommendations"](https://proceedings.mlr.press/v235/zhai24a.html) (ICML'24).
 
-## 🚀 Key Improvements over SASRec on KuaiRec
+## 🚀 What's here
 
-### Performance Gains
-HSTU achieves substantial improvements over SASRec on the KuaiRec dataset:
-- **Enhanced Sequential Modeling**: Superior capture of user behavior patterns in short video consumption
-- **Improved Recommendation Quality**: Better understanding of user preferences through advanced attention mechanisms
-- **Scalable Architecture**: Efficient handling of large-scale video recommendation scenarios
+- **HSTU and SASRec** sequential recommenders, trained/evaluated on KuaiRec.
+- **Duration-aware rating normalization** for UGC short video (watch_ratio /
+  expected-watch-ratio; see below).
+- **Time2Vec temporal encoder** with a clean gin A/B against the positional
+  baseline (the main contribution; see [Temporal Encoding](#️-temporal-encoding-time2vec)).
+
+> On KuaiRec `small_matrix` (full per-epoch eval), **HSTU and SASRec are roughly
+> on par** — see [Results](#-results-hstu-vs-sasrec-full-eval) for the verified
+> numbers. (Earlier versions of this README reported a large HSTU advantage; those
+> figures came from single-batch in-loop eval peaks and did not reproduce on the
+> full evaluation — they have been corrected.)
 
 ### 📱 UGC Short Video Adaptations
 
@@ -206,128 +216,54 @@ CUDA_VISIBLE_DEVICES=0 python3 generative-recommenders/main.py \
     --master_port=12345
 ```
 
-## 🤖 Automated Results Generation
+## 📊 Results: HSTU vs SASRec (full eval)
 
-### Results Analysis Tools
+These numbers are read directly from the committed TensorBoard logs under
+`generative-recommenders/exps/kuai_video-l100/` (the `eval_epoch/*` scalars =
+**full per-epoch evaluation**), reported as the **mean over the last 10 epochs**,
+averaged across the committed runs for each `batch/negatives` config (seq len 100).
 
-We provide automated tools to generate comprehensive comparison analysis from TensorBoard logs:
+![HSTU vs SASRec, full eval](plots/kuai_video-l100_metrics_comparison.png)
+*Figure: HSTU vs SASRec on KuaiRec `small_matrix`, full per-epoch eval, last-10-epoch mean ± std over committed runs.*
 
-#### 📊 Complete Analysis Pipeline
+| config (batch/neg) | model | HR@10 | HR@50 | HR@200 | NDCG@10 | NDCG@50 | MRR |
+|---|---|---|---|---|---|---|---|
+| 48 / 128 | HSTU | 0.328 | 0.572 | 0.845 | 0.231 | 0.284 | 0.216 |
+| 48 / 128 | **SASRec** | **0.347** | **0.593** | **0.854** | **0.247** | **0.300** | **0.230** |
+| 48 / 64 | HSTU | 0.314 | 0.565 | 0.841 | 0.222 | 0.277 | 0.209 |
+| 48 / 64 | **SASRec** | **0.342** | **0.577** | **0.850** | **0.243** | **0.294** | **0.227** |
+| 128 / 128 | HSTU | 0.318 | 0.550 | 0.828 | 0.228 | 0.278 | 0.214 |
+| 128 / 128 | **SASRec** | **0.340** | **0.556** | **0.835** | **0.242** | **0.289** | **0.226** |
+| 128 / 64 | HSTU | 0.325 | 0.566 | 0.832 | 0.231 | 0.283 | 0.216 |
+
+(No committed SASRec run for `128/64`.)
+
+**Honest takeaway:** on KuaiRec `small_matrix` with full evaluation, **HSTU and
+SASRec are roughly on par — SASRec is in fact slightly ahead** across the configs
+where both were run. This dataset is small (1411 users / 3327 items, fully
+observed) and the model is tiny (50-dim, 2 blocks), so a large architectural gap
+is not expected here.
+
+> **Correction note.** Earlier revisions of this README reported HSTU beating
+> SASRec by +8.7% to +37.8% (e.g. HR@10 0.5208, NDCG@10 0.3612), and referenced a
+> "cleaned dataset" and `generate_results.py` / `generate_final_comparison.py`.
+> Those numbers came from the **single-batch in-loop eval** (`eval/*`, batch of 48
+> → values like 25/48 = 0.5208), not the full evaluation, and the cleaned-dataset
+> split and those scripts are not in the repo. They have been replaced with the
+> verified full-eval numbers above.
+
+### Reproducing these numbers
+
 ```bash
-# Generate all results: tables, plots, and analysis
-python generate_results.py
-
-# Options:
-python generate_results.py --base_path generative-recommenders/exps --output_dir results
-python generate_results.py --plots --tables  # Generate specific outputs
-python generate_results.py --dataset kuai_video-l100_cleaned  # Specific dataset
+cd generative-recommenders
+# train (writes tfevents under exps/ and logs to wandb if enabled)
+CUDA_VISIBLE_DEVICES=0 python3 main.py \
+  --gin_config_file=configs/kuai_video/hstu-sampled-softmax-n128-small.gin --master_port=12345
+# the temporal-ablation comparison plot:
+python3 plot_temporal_ablation.py        # -> plots/temporal_ablation_*.png
+# the HSTU-vs-SASRec comparison plot above:
+python3 plot_hstu_vs_sasrec.py           # -> plots/kuai_video-l100_metrics_comparison.png
 ```
-
-#### 🎯 Targeted Final Comparison
-```bash
-# Generate focused comparison for key configurations: (48,64,100), (48,128,100), (128,128,200)
-python generate_final_comparison.py
-```
-
-#### 📁 Generated Outputs
-
-**Tables** (in `results/tables/`):
-- `{dataset}_results.csv` - Raw performance metrics
-- `{dataset}_results_with_improvements.csv` - With percentage improvements over SASRec
-- `{dataset}_results.md` - Markdown formatted tables for documentation
-
-**Plots** (in `results/plots/`):
-- `{dataset}_hr_ndcg_comparison.png` - HR@10 vs NDCG@10 scatter plots
-- `{dataset}_metrics_comparison.png` - 6-panel metrics comparison
-- `final_comparison.png` - Focused comparison for key configurations
-- `final_scatter_comparison.png` - HR@10 vs NDCG@10 for target configs
-
-#### 🔧 Features
-- **Automatic TensorBoard Parsing**: Extracts metrics from `events.out.tfevents.*` files
-- **Batch Size Correction**: Properly parses batch size from experiment directory names
-- **Dataset Cleaning Support**: Processes both original and cleaned datasets from `remove_data/`
-- **Beautiful Visualizations**: Publication-ready plots with custom color schemes
-- **Percentage Improvements**: Automatic calculation of improvements over SASRec baseline
-- **Configuration Analysis**: Detailed breakdown by batch size, negatives, and sequence length
-
-#### 📊 Experimental Results
-
-### 🎯 Final Performance Comparison - Key Configurations
-![Final Performance Comparison](plots/kuai_video-l100_metrics_comparison.png)
-*Figure: Comprehensive performance comparison across all metrics for key configurations with l=100*
-
-| Dataset | Configuration | Method | HR@10 | NDCG@10 | Improvement |
-|---------|---------------|--------|-------|---------|-------------|
-| **Kuai-Video-L100** | (48, 64, 100) | HSTU | **0.5208** | **0.3612** | **+8.7% / +14.5%** |
-| | | SASRec | 0.4792 | 0.3156 | baseline |
-| **Kuai-Video-L100** | (48, 128, 100) | HSTU | **0.5208** | **0.3644** | **+8.7% / +15.9%** |
-| | | SASRec | 0.4792 | 0.3145 | baseline |
-| **Kuai-Video-L100 (Cleaned)** | (48, 64, 100) | HSTU | **0.5208** | **0.3612** | **+31.6% / +36.6%** |
-| | | SASRec | 0.3958 | 0.2645 | baseline |
-| **Kuai-Video-L100 (Cleaned)** | (48, 128, 100) | HSTU | **0.5208** | **0.3644** | **+25.0% / +7.9%** |
-| | | SASRec | 0.4167 | 0.3377 | baseline |
-
-### 📈 Comprehensive Results - Kuai-Video-L100 (Cleaned Dataset)
-
-| Method | Batch Size | Negatives | Seq Length | HR@10 | NDCG@10 | HR@50 | NDCG@50 | HR@200 | NDCG@200 |
-|:-------|----------:|----------:|----------:|:------|:--------|:------|:--------|:-------|:---------|
-| **HSTU** | 48 | 64 | 100 | **0.5208 (+31.6%)** | **0.3612 (+36.6%)** | **0.8333 (+21.2%)** | **0.4291 (+29.8%)** | **1.0000 (+2.1%)** | **0.4561 (+21.2%)** |
-| **HSTU** | 48 | 128 | 100 | **0.5208 (+31.6%)** | **0.3644 (+37.8%)** | **0.8125 (+18.2%)** | **0.4311 (+30.4%)** | **1.0000 (+2.1%)** | **0.4588 (+21.9%)** |
-| **HSTU** | 128 | 64 | 100 | **0.4375 (+10.5%)** | **0.3190 (+20.6%)** | **0.7188 (+4.5%)** | **0.3797 (+14.8%)** | **0.9375 (-4.3%)** | **0.4132 (+9.8%)** |
-| **HSTU** | 128 | 128 | 100 | 0.3203 (-19.1%) | 0.2302 (-13.0%) | 0.6250 (-9.1%) | 0.2963 (-10.4%) | 0.9219 (-5.9%) | 0.3411 (-9.3%) |
-| SASRec | 48 | 64 | 100 | 0.3958 | 0.2645 | 0.6875 | 0.3307 | 0.9792 | 0.3762 |
-| SASRec | 48 | 128 | 100 | 0.4167 | 0.3377 | 0.7500 | 0.4079 | 0.9375 | 0.4358 |
-| SASRec | 128 | 128 | 100 | 0.4609 | 0.3609 | 0.7266 | 0.4178 | 0.9062 | 0.4443 |
-
-### 📊 Comprehensive Results - Kuai-Video-L100 (Original Dataset)
-
-| Method | Batch Size | Negatives | Seq Length | HR@10 | NDCG@10 | HR@50 | NDCG@50 | HR@200 | NDCG@200 |
-|:-------|----------:|----------:|----------:|:------|:--------|:------|:--------|:-------|:---------|
-| **HSTU** | 48 | 64 | 100 | **0.5208 (+8.7%)** | **0.3612 (+14.5%)** | **0.8333 (+8.1%)** | **0.4291 (+13.0%)** | **1.0000 (+4.3%)** | **0.4561 (+11.5%)** |
-| **HSTU** | 48 | 128 | 100 | **0.5208 (+8.7%)** | **0.3644 (+15.5%)** | **0.8125 (+5.4%)** | **0.4311 (+13.5%)** | **1.0000 (+4.3%)** | **0.4588 (+12.2%)** |
-| **HSTU** | 128 | 64 | 100 | 0.4375 (-8.7%) | **0.3190 (+1.1%)** | 0.7188 (-6.8%) | 0.3797 (-0.0%) | 0.9375 (-2.2%) | **0.4132 (+1.1%)** |
-| **HSTU** | 128 | 128 | 100 | 0.3203 (-33.2%) | 0.2302 (-27.1%) | 0.6250 (-18.9%) | 0.2963 (-22.0%) | 0.9219 (-3.8%) | 0.3411 (-16.6%) |
-| SASRec | 48 | 64 | 100 | 0.4792 | 0.3156 | 0.7708 | 0.3797 | 0.9583 | 0.4089 |
-| SASRec | 48 | 128 | 100 | 0.4792 | 0.3145 | 0.7500 | 0.3744 | 0.9375 | 0.4050 |
-
-### 🎨 Visual Analysis
-
-#### Final Comparison Plots
-Our automated analysis generates publication-ready visualizations:
-
-1. **`results/plots/final_comparison.png`** - Comprehensive 6-panel comparison showing all metrics (HR@10, NDCG@10, HR@50, NDCG@50, HR@200, NDCG@200) across target configurations
-2. **`results/plots/final_scatter_comparison.png`** - HR@10 vs NDCG@10 scatter plot with configuration annotations
-
-#### Generating Results
-```bash
-# Generate all results and plots
-python generate_results.py
-
-# Generate only final comparison plots
-python generate_final_comparison.py
-```
-
-### 🏆 Key Findings Summary
-
-#### Performance Highlights:
-1. **HSTU Achieves Significant Improvements**: Up to **+37.8% NDCG@10** improvement on cleaned dataset
-2. **Optimal Configuration**: **(48, 64, 100)** and **(48, 128, 100)** show best HSTU performance
-3. **Dataset Cleaning Impact**: Removing low-quality interactions dramatically improves HSTU advantages
-4. **Batch Size Sensitivity**: Smaller batch sizes (48) generally outperform larger ones (128)
-
-#### Configuration Impact Analysis:
-1. **Batch Size 48 vs 128**: HSTU shows much stronger performance with batch size 48
-2. **Negatives 64 vs 128**: Similar performance across different negative sampling rates
-3. **Dataset Cleaning Effect**: 
-   - **Original**: HSTU shows 8.7-15.5% improvements
-   - **Cleaned**: HSTU shows 25.0-37.8% improvements
-4. **Consistency**: HSTU maintains superior performance across most configurations
-
-#### HSTU Advantages:
-- **Robustness**: Consistent improvements across multiple configurations
-- **Efficiency**: Better performance with smaller batch sizes
-- **Data Quality Sensitivity**: Exceptional gains on cleaned datasets
-- **Sequential Modeling**: Superior capture of user behavior patterns
 
 ## 🔬 Technical Details
 
