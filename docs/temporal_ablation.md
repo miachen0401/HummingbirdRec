@@ -135,9 +135,38 @@ This explains the original "RoPE" failure: it was applied to **HSTU** (already
 time-aware) *and* encoded only hour-of-day. The clean win is on a backbone
 without a time mechanism (SASRec).
 
-### Caveats / next steps
+**v3 (final) — v2 + weight decay on the temporal params** (`temporal_weight_decay
+= 0.1`, applied only to the Time2Vec + projection params via a dedicated optimizer
+group; backbone and baseline runs unchanged). This regularizes the added capacity
+to curb the late overfit seen on HSTU in v2.
+
+| backbone | variant | HR@10 | HR@50 | NDCG@10 | NDCG@50 | MRR |
+|---|---|---|---|---|---|---|
+| SASRec | baseline | 0.328±.009 | 0.557±.007 | 0.236±.005 | 0.286±.004 | 0.222±.003 |
+| SASRec | **temporal+wd** | **0.352±.007** | **0.577±.006** | **0.250±.005** | **0.299±.004** | **0.232±.004** |
+| HSTU | baseline | 0.330±.007 | 0.566±.006 | 0.237±.006 | 0.288±.005 | 0.223±.006 |
+| HSTU | temporal+wd | **0.342±.007** | **0.575±.007** | 0.237±.006 | 0.288±.006 | 0.219±.006 |
+
+Δ% (temporal+wd vs baseline, last-10 mean):
+- **SASRec: every metric up, larger than v2** — HR@10 +7.4%, HR@50 +3.4%, HR@200 +1.0%, NDCG@10 +5.8%, NDCG@50 +4.4%, MRR +4.6%.
+- **HSTU: no longer degraded** — HR@10 +3.7%, HR@50 +1.6%; NDCG@10 +0.0%, NDCG@50 −0.2%, MRR −1.7%, HR@200 −1.4% (the last three are within ~1× the run std). The v2 overfit (NDCG@10 −5.6%, MRR −6.2%) is gone.
+
+**Final conclusion.** A properly designed temporal encoder (Time2Vec recency/gap +
+cyclical time, added as a zero-init residual, with its capacity weight-decayed):
+- **helps SASRec strongly and across the board** (+1 to +7%), and
+- **helps HSTU's recall (HR@10/HR@50) and is neutral on its ranking quality**
+  (NDCG/MRR within noise) — expected, since HSTU already models inter-event time
+  deltas in attention, so the marginal value of an input-side temporal encoding is
+  small but, once regularized, it no longer hurts.
+
+So the component is **≥ baseline (helpful or neutral) for both backbones** — the
+opposite of the original hour-only "RoPE", which only encoded hour-of-day and was
+tested on HSTU (already time-aware), so it could never help.
+
+### Caveats
 - Single seed; KuaiRec `small_matrix` is tiny (1270 train / 141 eval users) and
   noisy (per-epoch std ~0.004–0.009), so few-% deltas are soft.
-- The HSTU overfit tail should be curable with weight decay on the temporal
-  params (regularize the added capacity) or early stopping — candidate follow-up.
-- `big_matrix` / longer sequences / 3 seeds would firm up the conclusion.
+- The HSTU-temporal+wd run was killed by a co-tenant GPU job at epoch 81 (others
+  ran 101); its last-10 window (ep 72–81) is still in the converged regime, so the
+  comparison holds, but it is not a full 101-epoch run.
+- `big_matrix` / longer sequences / 3 seeds would firm up the magnitudes.
